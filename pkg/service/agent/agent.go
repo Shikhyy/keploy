@@ -715,10 +715,12 @@ func (a *Agent) resetScopeState() {
 // beginLogKeySession begins a session's key for the path tags the agent's
 // lines name its calls by (models.LogKeySession), as a recording or a
 // replay's session begins: the ingress takes each connection from now under
-// it (SetLogKeySession), and the returned ctx, which the proxy's Record or
-// Mock is given, carries it to the proxy's session, whose connections are
-// tagged under it. A session another program serves through this agent's
-// proxy at the same time keeps the key of its own.
+// it (SetLogKeySession), the registry logs the processes the session's calls
+// come from under it (starts.Registry.SetLogKeySession), and the returned
+// ctx, which the proxy's Record or Mock is given, carries it to the proxy's
+// session, whose connections are tagged under it. A session another
+// program serves through this agent's proxy at the same time keeps the key
+// of its own.
 func (a *Agent) beginLogKeySession(ctx context.Context) context.Context {
 	keys := models.NewLogKeySession()
 	if s, ok := a.IncomingProxy.(interface {
@@ -726,6 +728,9 @@ func (a *Agent) beginLogKeySession(ctx context.Context) context.Context {
 	}); ok {
 		s.SetLogKeySession(keys)
 	}
+	// The record log names each process a call came from once, its command
+	// line's words tagged under the session (starts.Registry).
+	starts.Default.SetLogKeySession(keys)
 	return models.WithLogKeySession(ctx, keys)
 }
 
@@ -1040,10 +1045,11 @@ func (a *Agent) letProxyPortsMove() {
 
 func (a *Agent) GetConsumedMocks(ctx context.Context) ([]models.MockState, error) {
 	// keploy test's read of what was consumed after a set's last test, with
-	// the proven switch off, which reads no misses there: every answer held
-	// for a later place of the set is due (coreAgent.RunSetEnder). It files
-	// nothing: no parser holds a call for a set whose client reads no set's
-	// end (models.OutgoingOptions.ReadsSetEnds).
+	// the proven switch off, which reads the set's misses only after it, for
+	// the set's report: every answer held for a later place of the set is
+	// due (coreAgent.RunSetEnder). It files nothing: no parser holds a call
+	// for a set whose client does not say it reads each set's end
+	// (models.OutgoingOptions.ReadsSetEnds).
 	if models.SetEndRead(ctx) {
 		if e, ok := a.Proxy.(coreAgent.RunSetEnder); ok {
 			e.EndRunSet()
