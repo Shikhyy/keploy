@@ -875,6 +875,16 @@ func (m *mockService) Replay(ctx context.Context) (err error) {
 			zap.Int("missed", counts.missedData),
 			zap.String("next_step", "a dependency contract drifted; re-record the set (keploy mock record) or add the new calls with --on-miss record"))
 	}
+	// A call answered with another call's recording passed on an answer
+	// that is not its own: --strict, which fails unless every call was
+	// answered from the recording, fails on it as on a miss.
+	if m.config.Mock.Strict && len(counts.asAnother) > 0 && utils.ErrCode == 0 {
+		utils.ErrCode = 1
+		failedBy = FailedByStrict
+		m.logger.Error("replay failed under --strict: calls were answered with the recording of another call, not their own",
+			zap.Int("answered_as_another", len(counts.asAnother)),
+			zap.String("next_step", "record those calls (keploy mock record) so each is answered with its own recording; each is named above"))
+	}
 
 	// A replay that served NONE of the recorded calls verified nothing: the test
 	// command never exercised the recording, so a green exit would be a false
@@ -1057,6 +1067,8 @@ func (m *mockService) Replay(ctx context.Context) (err error) {
 		UnchargedMisses: counts.uncharged,
 		RequiredNotMade: counts.requiredNotMade,
 		RequiredNotDue:  counts.requiredNotDue,
+
+		AnsweredAsAnother: answeredAsAnotherReceipt(counts.asAnother),
 
 		CaptureIncomplete: incompleteLosses,
 
@@ -2690,6 +2702,12 @@ type replayCounts struct {
 	consumed   int
 	missed     int
 	missedData int
+	// asAnother are the calls the agent answered with the recording of
+	// another call (models.AnsweredAsAnother), with the proven switch off:
+	// served, so missed does not count them, but nothing shows the call's
+	// own answer was served, so the run is not counted as proven
+	// (isolation) and --strict fails it. nil when the misses were not read.
+	asAnother []models.UnmatchedCall
 	// missesUnread is why the read of the calls no mock answered was
 	// incomplete (models.UnreadCause), when missed is -1.
 	missesUnread string
@@ -2878,6 +2896,9 @@ func (m *mockService) reportOutcome(ctx context.Context, loaded int, detail repl
 	// a clean replay when in truth nothing is known. Each count says "unknown"
 	// only for the read that actually failed; the other still carries its real
 	// value.
+	// A call the agent answered with another call's recording was served:
+	// no miss, counted apart (replayCounts.asAnother).
+	misses, asAnother := splitAnsweredAsAnother(misses)
 	summary := []zap.Field{zap.Int("loaded", loaded)}
 	if consumedErr != nil {
 		summary = append(summary, zap.String("consumed", "unknown"))
@@ -2888,6 +2909,9 @@ func (m *mockService) reportOutcome(ctx context.Context, loaded int, detail repl
 		summary = append(summary, zap.String("missed", "unknown"))
 	} else {
 		summary = append(summary, zap.Int("missed", len(misses)))
+		if len(asAnother) > 0 {
+			summary = append(summary, zap.Int("answered_as_another", len(asAnother)))
+		}
 	}
 	if consumedErr == nil && missesErr == nil {
 		m.logger.Info("mock replay summary", summary...)
@@ -2917,6 +2941,7 @@ func (m *mockService) reportOutcome(ctx context.Context, loaded int, detail repl
 	for _, miss := range misses {
 		logMiss(m.logger, miss)
 	}
+	sayAnsweredAsAnother(m.logger, m.console, asAnother)
 	// Each call whole, beside the path tag the lines above name it by: on
 	// the console, the first missConsoleMax calls, and every one in
 	// MissesFile.
@@ -2961,7 +2986,7 @@ func (m *mockService) reportOutcome(ctx context.Context, loaded int, detail repl
 			})
 		}
 	}
-	counts := replayCounts{consumed: len(consumed), missed: len(misses)}
+	counts := replayCounts{consumed: len(consumed), missed: len(misses), asAnother: asAnother}
 	for _, miss := range misses {
 		if miss.CountsAgainstTest() {
 			counts.missedData++
@@ -2971,7 +2996,7 @@ func (m *mockService) reportOutcome(ctx context.Context, loaded int, detail repl
 		counts.consumed = -1
 	}
 	if missesErr != nil {
-		counts.missed, counts.missedData = -1, -1
+		counts.missed, counts.missedData, counts.asAnother = -1, -1, nil
 		counts.missesUnread = models.UnreadCause(missesErr)
 	} else if provenswitch.On() {
 		counts.uncharged = unchargedMisses(misses)
